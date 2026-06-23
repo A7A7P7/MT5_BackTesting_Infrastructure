@@ -1,86 +1,17 @@
 #%%
+
 import pandas as pd
 import numpy as np
-from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
 from collections import deque
 from copy import deepcopy
-import MetaTrader5 as mt5
-import pytz
 import math
 import plotly.graph_objects as go
-import matplotlib.pyplot as plt
 
 #%%
 
-from data_preparation_mt5.data_store_fetch_cache.data_store_fetch_cache import read_parquet_to_df
-from data_preparation_mt5.data_load.data_loader import ensure_sunday_date,mt5_import_to_df
-from data_preparation_mt5.data_clean.data_cleaner import df_m1_cleaning,remove_unprintable_rows
-from data_preparation_mt5.data_inspect.data_inspection_tfs_adjustments import missing_candles_m1_ny_time,different_timeframe
-
-#%%
-
-from helpers import helpers_funcs
-from backtest_infrastructure import classes_file
-
-#%%
-
-classes_file.ExecutionEngine()
-
-#%%
-
-df_m1 = read_parquet_to_df(r"C:\Users\Afons\Investments\Caching_mt5_fx_pairs_m1","EURUSD")
-
-#%%
-
-symbol = "EURUSD"
-tf_m1 = mt5.TIMEFRAME_M1
-tz = pytz.timezone("America/New_York")
-tz_utc = pytz.UTC
-start_date = ensure_sunday_date(datetime(year=2012,month=4,day=1,tzinfo=tz_utc)) #month 4 and day 1
-end_date = ensure_sunday_date(datetime(year=2012,month=6,day=24,tzinfo=tz_utc))
-
-df_m1 = mt5_import_to_df(symbol,tf_m1,start_date,end_date)
-
-#%%
-
-df_m1
-
-#%%
-
-df_m1_test = df_m1_cleaning(df_m1)
-dic_stats_df = missing_candles_m1_ny_time(df_m1_test)
-df_m1_test = dic_stats_df['df_m1']
-
-#%%
-
-df_m5 = different_timeframe(df_m1_test,5)
-
-#%%
-
-df_m15 = different_timeframe(df_m1_test,15)
-
-#%%
-
-df_m15
-
-#%%
-
-df_m5
-
-#%%
-
-df_m1[(
-    (df_m1["Hour_of_Day"] == 17) & (df_m1["Week_day"] == 6) & (df_m1["Date"].dt.day == 2) & (df_m1["Date"].dt.month == 4)
-)]
-
-df_batch = df_m1.loc[0:1858388,:]
-
-
-
-#%%
-
+#CANDLES TREATMENT
 
 @dataclass
 class Candle:
@@ -93,6 +24,8 @@ class Candle:
     close: float
 
     tick_volume: float = 0
+
+#STRUCTURE AND RANGES
 
 @dataclass
 class RangeState:
@@ -132,6 +65,27 @@ class RangeState:
         self.high = high
         self.timestamp_high = ts_high
 
+@dataclass
+class StrategyContext:
+
+    indicator_values : dict
+    structure_snapshot : dict
+    structure_events : list
+    timestamp : datetime
+    #timeframe
+    #htf_context
+    #ltf_context
+    #session_state
+    #position_state
+
+    def clean_list(self):
+
+        self.structure_events.clear()
+
+    def clean_dict(self):
+
+        self.indicator_values.clear()
+        self.structure_snapshot.clear()
 
 class Structure:
 
@@ -170,7 +124,6 @@ class Structure:
         self.candles_in_range = []
         self.premium = None
         self.discount = None
-        self.candles_m1_per_each_candle = None
         
 
     def local_lows_highs_and_timestamps(self):
@@ -1086,6 +1039,7 @@ class Structure:
         self.events.clear()
         return events
 
+#INDICATORS
 
 class ATR:
 
@@ -1310,7 +1264,6 @@ class Chop_Index:
             sum_atr = sum(self.atr)
             chop_index = 100 * (math.log10(sum_atr/self.max_range)/math.log10(self.n_candles_considered))
             self.value = chop_index
-
 
 class Money_Flow_Index: #DON'T HAVE VOLUME, SOME THAT DOESN'T HAVE ANY USEFULNESS
 
@@ -1708,129 +1661,7 @@ class Stochastic_Oscillator:
 
                 self.fast_crossing_below_slow = True if (yesterday_fast_above_slow and today_fast_below_slow) else False
 
-
-@dataclass
-class StrategyContext:
-
-    indicator_values : dict
-    structure_snapshot : dict
-    structure_events : list
-    timestamp : datetime
-    #timeframe
-    #htf_context
-    #ltf_context
-    #session_state
-    #position_state
-
-    def clean_list(self):
-
-        self.structure_events.clear()
-
-    def clean_dict(self):
-
-        self.indicator_values.clear()
-        self.structure_snapshot.clear()
-
-
-@dataclass
-class SetupEvent:
-
-    timeframe: str
-    direction: str
-    timestamp: datetime
-
-
-class M1_Strat_Signal: #NO INIT NO MEMORY, PURE STATELESS DOESN'T HAVE ANY PROPERTIES, IT DEPENDS ON PROPERTIES YOU GIVE TO YOUR INDICATORS
-
-    def signal_generation(self,context:StrategyContext):
-
-        """WHEN IMPRINTING INDICATORS IN M1 ENGINE FIRST USE SLOW_SMA AND THEN FAST_SMA"""
-        sma_slow = context.indicator_values['slow']
-        sma_fast = context.indicator_values['fast']
-        direction = context.structure_snapshot['active_range'].direction
-        timestamp = context.timestamp
-        #PREMIUM AND DISCOUNT YOU MIGHT WANT TO USE THEM
-
-        if sma_fast is None or sma_slow is None:
-            return None
-        
-        else:
-
-            if sma_fast > sma_slow:
-                
-                setup_event = SetupEvent(
-                    timeframe = "m1",
-                    direction = "BUY",
-                    timestamp = timestamp
-                )
-                return setup_event
-
-            elif sma_fast < sma_slow:
-                return None
-        
-
-class M5_Strat_Signal:
-
-    def signal_generation(self,context:StrategyContext):
-
-        rsi = context.indicator_values['rsi']
-        direction = context.structure_snapshot['active_range'].direction
-        timestamp = context.timestamp
-
-        if rsi is None:
-            return None
-        
-        else:
-
-            if rsi < 25:
-                
-                setup_event = SetupEvent(
-                    timeframe = "m5",
-                    direction = "BUY",
-                    timestamp = timestamp
-                )
-                return setup_event
-
-            else:
-                return None
-        
-        
-class M15_Strat_Signal: #NO INIT NO MEMORY, PURE STATELESS DOESN'T HAVE ANY PROPERTIES, IT DEPENDS ON PROPERTIES YOU GIVE TO YOUR INDICATORS
-
-    def signal_generation(self,context:StrategyContext):
-
-        """WHEN IMPRINTING INDICATORS IN M1 ENGINE FIRST USE SLOW_SMA AND THEN FAST_SMA"""
-        rsi = context.indicator_values['rsi']
-        sma_slow = context.indicator_values['slow']
-        sma_fast = context.indicator_values['fast']
-        direction = context.structure_snapshot['active_range'].direction
-        timestamp = context.timestamp
-        #PREMIUM AND DISCOUNT YOU MIGHT WANT TO USE THEM
-
-        if direction != "Low-High":
-
-            return None
-        
-        else:
-
-            if sma_fast is None or sma_slow is None or rsi is None:
-                return None
-            
-            else:
-            
-                if (sma_fast > sma_slow) and rsi < 30:
-
-                    setup_event = SetupEvent(
-                        timeframe = "m15",
-                        direction = "BUY",
-                        timestamp = timestamp
-                    )
-
-                    return setup_event
-
-                else:
-
-                    return None
+#SINGULAR TIMEFRAME ENGINE
 
 class Engine:
 
@@ -1881,6 +1712,117 @@ class Engine:
         signal = self.strategy.signal_generation(self.context)
 
         return signal
+
+#INSTRUMENT IN WHICH THE BACKTEST RUNS
+
+class Instrument:
+
+    def __init__(self,symbol:str,pip_size:float,tick_size:float,contract_size:float,spread:float):
+
+        self.symbol = symbol
+        self.pip_size = pip_size
+        self.tick_size = self.pip_size / 10 #minimum allowable price increment by which a tradable asset can move , pipettes in FX
+        self.spread = spread
+
+        # spread: float
+
+        # contract_size: float
+
+        # min_lot: float
+        # lot_step: float
+
+        # commission_per_lot: float
+
+    """USE IT TO CHECK ON OTHER INSTRUMENTS, THEN ON POSITION YOU ADD A PROPERTY
+       INSTRUMENT WHERE YOU SPECIFY SYMBOL AND TICK_SIZE THE INSTRUMENT EQUIVALENT
+       TO FX_PIP, BASICALLY UNIT OF ACCOUNTING. IF YOU USE THAT 'spread_in_pips','self.pip'
+       CAN DISAPPEAR BECAUSE INSTRUMENT CLASS WILL ACCOUNT FOR THAT
+    """
+
+#SIGNALLING OFF INTENTION OF CREATING A MARKET ORDER
+
+@dataclass
+class TradeIntent:
+    direction: str
+    timestamp: datetime
+    timeframes: dict
+    confidence: float = 1.0
+
+#MATCHING OFF TIMEFRAMES TO MAKE THE ORDER VALID
+
+class ConfluenceEngine:
+
+    def __init__(self,latest_setup_dict:dict):
+
+        self.latest_setup = latest_setup_dict 
+
+        #THEN WHEN INSTANTIATING ConfluenceEngine I pass the self.latest_setup from MultiTfEngine
+
+    def is_valid_confluence(self):
+
+        direction_lst = []
+        var_setup = not None
+        for key in self.latest_setup:
+
+            value_of_the_key = self.latest_setup[key] #EITHER 'None' OR 'SetupEvent' Object From strategies files on folder
+
+            if value_of_the_key == None:
+
+                var_setup = None
+                direction_lst.append(var_setup)
+            
+            else:
+
+                direction_lst.append(value_of_the_key.direction)
+
+        n_buy = direction_lst.count("BUY")
+        n_sell = direction_lst.count("SELL")
+
+        if var_setup == None: #THIS MEANS THAT IF ONE OF THEM IS 'None' THIS WILL RETURN FALSE
+            return False
+
+        return (
+            n_buy == len(direction_lst) or n_sell == len(direction_lst)
+        )
+
+    def update(self, prev_setups: dict ,setups: dict):
+
+        smallest_tf = list(prev_setups.keys())[0]
+        tf_after_small = list(prev_setups.keys())[1] #ASSUMING THE STRATEGY USES 3 TFS
+        prev_timestamp = None if prev_setups[tf_after_small] == None else prev_setups[tf_after_small].timestamp
+
+        for tf, event in setups.items():
+            if event is not None:
+                self.latest_setup[tf] = event
+    
+        if self.is_valid_confluence(): #ALL TIMEFRAMES GIVE EITHER BUY OR SELL 
+
+            timestamp_differ = prev_timestamp != self.latest_setup[tf_after_small].timestamp
+
+            if timestamp_differ:
+
+                return TradeIntent(
+                    direction=self.latest_setup[smallest_tf].direction,
+                    timestamp=self.latest_setup[smallest_tf].timestamp,
+                    timeframes=self.latest_setup.copy()
+                )
+
+        return None
+
+#MARKET SIGNALS FOR CREATION OF POSITION
+
+@dataclass
+class MarketOrder:
+
+    symbol: str
+    direction: str
+    timestamp: datetime
+    status: str = "PENDING"
+    fill_price: float = None
+    fill_timestamp: datetime = None
+
+
+#POSITION CREATION & MODELLING OFF ENTRIES AND RISK
 
 class Position:
 
@@ -1993,6 +1935,58 @@ class Position:
             "commission" : self.commission
         }
 
+class RiskModel:
+
+    def __init__(self,entry_p:float,lst_highs:list,lst_lows:list,tick_measurement:float):
+
+        self.entry_p = entry_p
+        self.lst_highs = lst_highs
+        self.lst_lows = lst_lows
+        self.tick_measurement = tick_measurement
+
+        self.sl = None
+        self.tp = None
+    
+    def get_sl(self,minimum_ticks_for_sl:float):
+
+        lows_reversed = self.lst_lows.copy()
+        lows_reversed.reverse()
+
+        for low in lows_reversed:
+
+            ticks_from_entry = (self.entry_p - low) / self.tick_measurement
+
+            if ticks_from_entry >= minimum_ticks_for_sl :
+
+                self.sl = low
+                break
+    
+    def get_tp(self,minimum_risk_reward:float):
+
+        if self.sl != None:
+
+            highs_reversed = self.lst_highs.copy()
+            highs_reversed.reverse()
+
+            for high in highs_reversed:
+
+                pips_in_sl = abs(self.entry_p - self.sl) / self.tick_measurement
+                distance_from_entry = (high - self.entry_p) / self.tick_measurement
+                if distance_from_entry >= minimum_risk_reward * pips_in_sl:
+
+                    self.tp = high
+                    break
+                
+    def build_trade_levels(self,minimum_ticks_for_sl:float,minimum_risk_reward:float):
+
+        self.get_sl(minimum_ticks_for_sl)
+        self.get_tp(minimum_risk_reward)
+        if self.sl != None and self.tp != None:
+            print(f"Entry_P:{self.entry_p},SL:{self.sl},TP:{self.tp}")
+
+
+#PORTFOLIO COMPOSITION,FLOWS & DEALING WITH POSITIONS
+
 @dataclass
 class Portfolio:
 
@@ -2058,90 +2052,7 @@ class Portfolio:
         self.lst_pct_drawdown.append(possible_drawdown_pct)
 
 
-class Instrument:
-
-    def __init__(self,symbol:str,pip_size:float,tick_size:float,contract_size:float,spread:float):
-
-        self.symbol = symbol
-        self.pip_size = pip_size
-        self.tick_size = self.pip_size / 10 #minimum allowable price increment by which a tradable asset can move , pipettes in FX
-        self.spread = spread
-
-        # spread: float
-
-        # contract_size: float
-
-        # min_lot: float
-        # lot_step: float
-
-        # commission_per_lot: float
-
-    """USE IT TO CHECK ON OTHER INSTRUMENTS, THEN ON POSITION YOU ADD A PROPERTY
-       INSTRUMENT WHERE YOU SPECIFY SYMBOL AND TICK_SIZE THE INSTRUMENT EQUIVALENT
-       TO FX_PIP, BASICALLY UNIT OF ACCOUNTING. IF YOU USE THAT 'spread_in_pips','self.pip'
-       CAN DISAPPEAR BECAUSE INSTRUMENT CLASS WILL ACCOUNT FOR THAT
-    """
-
-class RiskModel:
-
-    def __init__(self,entry_p:float,lst_highs:list,lst_lows:list,tick_measurement:float):
-
-        self.entry_p = entry_p
-        self.lst_highs = lst_highs
-        self.lst_lows = lst_lows
-        self.tick_measurement = tick_measurement
-
-        self.sl = None
-        self.tp = None
-    
-    def get_sl(self,minimum_ticks_for_sl:float):
-
-        lows_reversed = self.lst_lows.copy()
-        lows_reversed.reverse()
-
-        for low in lows_reversed:
-
-            ticks_from_entry = (self.entry_p - low) / self.tick_measurement
-
-            if ticks_from_entry >= minimum_ticks_for_sl :
-
-                self.sl = low
-                break
-    
-    def get_tp(self,minimum_risk_reward:float):
-
-        if self.sl != None:
-
-            highs_reversed = self.lst_highs.copy()
-            highs_reversed.reverse()
-
-            for high in highs_reversed:
-
-                pips_in_sl = abs(self.entry_p - self.sl) / self.tick_measurement
-                distance_from_entry = (high - self.entry_p) / self.tick_measurement
-                if distance_from_entry >= minimum_risk_reward * pips_in_sl:
-
-                    self.tp = high
-                    break
-                
-    def build_trade_levels(self,minimum_ticks_for_sl:float,minimum_risk_reward:float):
-
-        self.get_sl(minimum_ticks_for_sl)
-        self.get_tp(minimum_risk_reward)
-        if self.sl != None and self.tp != None:
-            print(f"Entry_P:{self.entry_p},SL:{self.sl},TP:{self.tp}")
-
-
-@dataclass
-class MarketOrder:
-
-    symbol: str
-    direction: str
-    timestamp: datetime
-    status: str = "PENDING"
-    fill_price: float = None
-    fill_timestamp: datetime = None
-
+#CHECK MARKET HOURS FOR TREATMENT OF CANDLES AND THEIR TIMING
 
 class MarketHoursOpen:
 
@@ -2169,6 +2080,7 @@ class MarketHoursOpen:
     
     #def us equities and other markets.
 
+#COORDINATION OF MULTIPLE TIMEFRAMES GIVEN THE STRATEGY USES MULTIPLE TIMEFRAMES
 
 class MultiTimeframeEngine:
 
@@ -2333,124 +2245,19 @@ class MultiTimeframeEngine:
                     self.buffers[tf].clear()
 
 
-@dataclass
-class TradeIntent:
-    direction: str
-    timestamp: datetime
-    timeframes: dict
-    confidence: float = 1.0
+#CREATION OF MARKET ORDERS, DEFINING SL & TP BASED OFF 'RiskModel'
+#FILL PENDING ORDERS
+#UPDATE POSITIONS BASED ON THEIR PRICE LEVEL AND THEIR RESPECTIVE SL & TP
 
-class ConfluenceEngine:
+#LATER IT COULD ALSO DO:
+# apply spread
+# apply slippage
+# simulate execution latency
 
-    def __init__(self,latest_setup_dict:dict):
-
-        self.latest_setup = latest_setup_dict 
-
-        #THEN WHEN INSTANTIATING ConfluenceEngine I pass the self.latest_setup from MultiTfEngine
-
-    def is_valid_confluence(self):
-
-        direction_lst = []
-        var_setup = not None
-        for key in self.latest_setup:
-
-            value_of_the_key = self.latest_setup[key] #EITHER 'None' OR 'SetupEvent' Object
-
-            if value_of_the_key == None:
-
-                var_setup = None
-                direction_lst.append(var_setup)
-            
-            else:
-
-                direction_lst.append(value_of_the_key.direction)
-
-        n_buy = direction_lst.count("BUY")
-        n_sell = direction_lst.count("SELL")
-
-        if var_setup == None: #THIS MEANS THAT IF ONE OF THEM IS 'None' THIS WILL RETURN FALSE
-            return False
-
-        return (
-            n_buy == len(direction_lst) or n_sell == len(direction_lst)
-        )
-
-    def update(self, prev_setups: dict ,setups: dict):
-
-        smallest_tf = list(prev_setups.keys())[0]
-        tf_after_small = list(prev_setups.keys())[1] #ASSUMING THE STRATEGY USES 3 TFS
-        prev_timestamp = None if prev_setups[tf_after_small] == None else prev_setups[tf_after_small].timestamp
-
-        for tf, event in setups.items():
-            if event is not None:
-                self.latest_setup[tf] = event
-    
-        if self.is_valid_confluence(): #ALL TIMEFRAMES GIVE EITHER BUY OR SELL 
-
-            timestamp_differ = prev_timestamp != self.latest_setup[tf_after_small].timestamp
-
-            if timestamp_differ:
-
-                return TradeIntent(
-                    direction=self.latest_setup[smallest_tf].direction,
-                    timestamp=self.latest_setup[smallest_tf].timestamp,
-                    timeframes=self.latest_setup.copy()
-                )
-
-        return None
-
-
-# class ConfluenceEngine:
-
-#     def __init__(self,latest_setup_dict:dict):
-
-#         self.latest_setup = {
-#             "m1": None,
-#             "m5": None,
-#             "m15": None
-#         }
-
-#         self.latest_setup = latest_setup_dict
-
-#     def is_valid_confluence(self):
-
-#         #THESE latest_setup WILL BE FROM CLASS MultiTimeframeEngine property latest_setup because of the update
-#         m1 = self.latest_setup["m1"] #EITHER 'None' OR 'SetupEvent' Object
-#         m5 = self.latest_setup["m5"] #EITHER 'None' OR 'SetupEvent' Object
-#         m15 = self.latest_setup["m15"] #EITHER 'None' OR 'SetupEvent' Object
-
-#         none_exists = m1 == None or m5 == None or m15 == None
-
-#         if none_exists: #not m1 or not m5 or not m15:
-#             return False
-
-#         return (
-#             m1.direction == m5.direction == m15.direction
-#         )
-
-#     def update(self, prev_setups: dict ,setups: dict):
-
-#         middle_tf = list(prev_setups.keys())[1] #ASSUMING THE STRATEGY USES 3 TFS
-#         prev_timestamp = None if prev_setups[middle_tf] == None else prev_setups[middle_tf].timestamp
-
-#         for tf, event in setups.items():
-#             if event is not None:
-#                 self.latest_setup[tf] = event
-    
-#         if self.is_valid_confluence():
-
-#             timestamp_differ = prev_timestamp != self.latest_setup[middle_tf].timestamp
-
-#             if timestamp_differ:
-
-#                 return TradeIntent(
-#                     direction=self.latest_setup["m1"].direction,
-#                     timestamp=self.latest_setup["m1"].timestamp,
-#                     timeframes=self.latest_setup.copy()
-#                 )
-
-#         return None
-
+minimum_ticks_for_sl = float(input("Minimum Pips SL for each Trade: "))
+minimum_risk_reward = float(input("Minimum Risk to Reward for each Trade: "))
+minimum_minutes_between_market_orders = int(input("Minimum Minutes Between Consecutive but Different Creation of Market Orders: "))
+minimum_minutes_between_last_order_fill = int(input("Minimum Minutes Between Consecutive but Different Fills of Market Orders: "))
 
 class BrokerSimulator:
 
@@ -2469,7 +2276,7 @@ class BrokerSimulator:
 
             last_market_order = self.pending_market_orders[-1]
             seconds_since_emission_market_order = (candle.timestamp - last_market_order.timestamp).seconds
-            if seconds_since_emission_market_order / 60 >= 5:
+            if seconds_since_emission_market_order / 60 >= minimum_minutes_between_market_orders:
 
                 order = MarketOrder(
                 symbol="EURUSD",
@@ -2509,7 +2316,7 @@ class BrokerSimulator:
         )
 
         #MINIMUM SL & MINIMUM RR
-        trade_levels_object.build_trade_levels(10,1) #THEN FIND A WAY TO INPUT BEFOREHAND MINIMUM SL AND MINIMUM_RR
+        trade_levels_object.build_trade_levels(minimum_ticks_for_sl,minimum_risk_reward) #THEN FIND A WAY TO INPUT BEFOREHAND MINIMUM SL AND MINIMUM_RR
 
         return trade_levels_object
 
@@ -2528,7 +2335,7 @@ class BrokerSimulator:
 
             seconds_since_emission_market_order = (candle.timestamp - last_market_order.timestamp).seconds
 
-            if seconds_since_emission_market_order / 60 <= 15:
+            if seconds_since_emission_market_order / 60 <= minimum_minutes_between_last_order_fill:
 
                 if positions_exist:
 
@@ -2537,9 +2344,9 @@ class BrokerSimulator:
 
                     seconds_since_last_order = (candle.timestamp - entry_time).seconds
 
-                    if seconds_since_last_order / 60 <= 15:
+                    if seconds_since_last_order / 60 <= minimum_minutes_between_last_order_fill:
 
-                        last_market_order.status = "NOT FILLED, MARKET ORDER OF THIS SIGNAL ALEADY EXISTS"
+                        last_market_order.status = "NOT FILLED, MARKET ORDER OF THIS SIGNAL ALREADY EXISTS"
 
                     else:
 
@@ -2679,13 +2486,11 @@ class BrokerSimulator:
         self.check_sl_hit(position,last_candle)
         self.calculate_change_pnl(position,last_candle)
 
-
-# fill market orders
-# apply spread
-# apply slippage
-# reject invalid orders
-# trigger SL/TP
-# simulate execution latency
+#TURNING THE LST OF CANDLES INTO DF
+#PUTTING CANDLES FROM DF INTO VISUAL USING PLOTLY
+#HISTORICAL LISTS OF BALANCES INTO DF
+#HISTOGRAM OF ALL CANDLES RETURNS
+#CLOSED TRADES STATS IN DF
 
 class GraphicHelpers:
 
@@ -3127,6 +2932,8 @@ class GraphicHelpers:
 
         return df_closed_trades
 
+#SOME OF THE METRICS USED TO ASSESS THE STRATEGIES
+
 class Strategy_Metrics: #1st You need to Transform Data using GraphicHelpers Class
 
     def __init__(self,df_balances:pd.DataFrame,closed_trades_lst:list):
@@ -3223,6 +3030,8 @@ class Strategy_Metrics: #1st You need to Transform Data using GraphicHelpers Cla
         
         return dict_stats
 
+#EXECUTION DYNAMIC TO RUN THE BACKTEST CANDLE BY CANDLE
+
 class ExecutionEngine:
 
     def __init__(self,multi_tf_engine:MultiTimeframeEngine,broker:BrokerSimulator):
@@ -3237,18 +3046,18 @@ class ExecutionEngine:
         
     def on_candle(self,candle:Candle):
 
-        struct_snapshot = self.multi_tf_engine.engines['m1'].context.structure_snapshot
+        struct_snapshot = self.multi_tf_engine.engines[self.small_tf].context.structure_snapshot
 
         if struct_snapshot is None:
 
             self.multi_tf_engine.on_m1_candle(candle) #UPDATES EVERYTHING
-            act_range = self.multi_tf_engine.engines['m1'].context.structure_snapshot["active_range"]
+            act_range = self.multi_tf_engine.engines[self.small_tf].context.structure_snapshot["active_range"]
             #print(act_range.direction,act_range.timestamp_low if act_range.direction == "Low-High" else act_range.timestamp_high,act_range.timestamp_high if act_range.direction == "Low-High" else act_range.timestamp_low,candle.timestamp)
 
         else:
             
-            local_highs = self.multi_tf_engine.engines['m1'].context.structure_snapshot['local_highs']
-            local_lows = self.multi_tf_engine.engines['m1'].context.structure_snapshot['local_lows']
+            local_highs = self.multi_tf_engine.engines[self.small_tf].context.structure_snapshot['local_highs']
+            local_lows = self.multi_tf_engine.engines[self.small_tf].context.structure_snapshot['local_lows']
 
             self.broker.fill_pending_orders(candle,local_highs,local_lows)
 
@@ -3265,23 +3074,16 @@ class ExecutionEngine:
 
                 last_market_order = self.broker.pending_market_orders[-1]
                 if last_market_order.status == "FILLED":
-                    self.multi_tf_engine.structures_when_trade_is_entered['m1'].append(deepcopy(self.multi_tf_engine.engines['m1'].context.structure_snapshot))
-                    self.multi_tf_engine.structures_when_trade_is_entered['m5'].append(deepcopy(self.multi_tf_engine.engines['m5'].context.structure_snapshot))
-                    self.multi_tf_engine.structures_when_trade_is_entered['m15'].append(deepcopy(self.multi_tf_engine.engines['m15'].context.structure_snapshot))
-                    #WHENEVER ONE ENTERS A TRADE, A NEW ONE CAN ONLY BE ENTERED IF ALL THE CONDITIONS ARE MET BUT THE TIMEFRAME IN THE MIDDLE
-                    #CHANGED ITS CONDITIONS. 
+                    for tf in self.tf_keys:
 
-            if len(self.multi_tf_engine.buffers['m5']) == 0:
-
-                act_range = self.multi_tf_engine.engines['m5'].context.structure_snapshot #DICT OF THE KEY OF METHOD SNAPSHOT OF STRUCTURE
-                if act_range is not None:
-
-                    current_ts = act_range["current_candle"]["current_candle_ts"]
-                    #print(act_range.direction,act_range.timestamp_low if act_range.direction == "Low-High" else act_range.timestamp_high,act_range.timestamp_high if act_range.direction == "Low-High" else act_range.timestamp_low,candle.timestamp)
-                    #print(f"Current Timestamp M5 : {current_ts}")
+                        self.multi_tf_engine.structures_when_trade_is_entered[tf].append(deepcopy(self.multi_tf_engine.engines[tf].context.structure_snapshot))
+                        # self.multi_tf_engine.structures_when_trade_is_entered['m5'].append(deepcopy(self.multi_tf_engine.engines['m5'].context.structure_snapshot))
+                        # self.multi_tf_engine.structures_when_trade_is_entered['m15'].append(deepcopy(self.multi_tf_engine.engines['m15'].context.structure_snapshot))
+                        #WHENEVER ONE ENTERS A TRADE, A NEW ONE CAN ONLY BE ENTERED IF ALL THE CONDITIONS ARE MET BUT THE TIMEFRAME IN THE MIDDLE
+                        #CHANGED ITS CONDITIONS.
 
             """AT THIS STAGE THIS WORKS BECAUSE ONE IS ONLY BUYING BUT IF ONE STARTS BUYING AND SELLING, ONE WILL NEED TO ACCOUNT FOR THAT"""
-            intent = self.confluence_engine.update(self.multi_tf_engine.prev_setups_latest,self.multi_tf_engine.latest_setups,)
+            intent = self.confluence_engine.update(self.multi_tf_engine.prev_setups_latest,self.multi_tf_engine.latest_setups)
 
             if intent:
                 mkt_order = self.broker.create_market_order(candle)
@@ -3292,6 +3094,8 @@ class ExecutionEngine:
                 
                 #print(self.multi_tf_engine.engines['m1'].context.structure_snapshot)
     
+#MEMORYLESS AND 'ATRIBULESS' CLASS RESPONSIBLE FOR RUNNING THE THE BACKTEST 
+
 class BacktestRunner:
 
     def run_backtest(self,execution_machine:ExecutionEngine,lst_hist_candles:list):
@@ -3300,1265 +3104,3 @@ class BacktestRunner:
 
             execution_machine.on_candle(candle)
 
-#%%
-
-candles = [
-    Candle(
-        timestamp = row.Date.to_pydatetime(),
-        open = row.Open,
-        high = row.High,
-        low = row.Low,
-        close = row.Close,
-        tick_volume = row.Tick_Volume
-    ) for row in df_m1.itertuples()
-]
-
-#%%
-
-m1_engine = Engine(
-    indicators = {
-        'sma_slow' : SMA(length_sma=20,role="slow"),
-        'sma_fast' : SMA(length_sma=10,role="fast")
-    },
-    structure = Structure(30),
-    strat_signal = M1_Strat_Signal()
-)
-
-m5_engine = Engine(
-    indicators = {
-        'rsi' : RSI(period_size_gains_losses=14,role="rsi")
-    },
-    structure = Structure(48),
-    strat_signal = M5_Strat_Signal()
-)
-
-m15_engine = Engine(
-    indicators = {
-        'rsi' : RSI(period_size_gains_losses=14,role="rsi"),
-        'sma_slow' : SMA(length_sma=96,role="slow"),
-        'sma_fast' : SMA(length_sma=32,role="fast")
-    },
-    structure = Structure(48),
-    strat_signal = M15_Strat_Signal()
-)
-
-#%%
-
-portfolio = Portfolio(
-    active_positions = [],
-    closed_trades = [],
-    disposable_balance = 100.0,
-    lst_disposable_balance = [],
-    unrealized_balance = 100.0,
-    lst_unrealized_balance = [],
-    equity_curve = 100.0,
-    lst_equity_curve = [],
-    lst_pct_drawdown = []
-)
-
-broker = BrokerSimulator(
-    instrument = [],
-    portfolio = portfolio
-)
-
-n_timeframes = helpers_funcs.number_timeframes_used()
-timeframes_used = helpers_funcs.timeframes_chosen(n_timeframes)
-lst_tf_strat_signal = list()
-lst_tf_engines = list()
-
-#STRAT BUILDOUT USING MULTIPLE TIMEFRAMES.
-
-
-for i in range(len(timeframes_used)):
-
-    #TAKE OUT THE QUOTATION MARKS WHENEVER YOU DONE BUILDING EACH TF ENGINE
-    n_tf = i + 1
-
-    current_tf = list(timeframes_used.keys())[i]
-
-    if n_tf == 1:
-    
-        class GivenTF_Strat_Signal: #GivenTF might be M1,M5,M15,H1,H4 whatever is the TF in timeframes_used  
-            
-            def signal_generation(self,context:StrategyContext):
-            
-                #Outputs From Each Indicator on Engine Class 
-                all_roles = list(context.indicator_values.keys())
-                sma_slow = context.indicator_values[all_roles[0]]
-                sma_fast = context.indicator_values[all_roles[1]]
-
-                #Current Timestamp of the signal
-                timestamp = context.timestamp
-
-                cond_1 = sma_slow != None
-                cond_2 = sma_fast != None
-                combined_comb = cond_1 and cond_2 and sma_fast > sma_slow
-
-                if combined_comb:
-                
-                    setup_event = SetupEvent(
-                        timeframe = current_tf,
-                        direction = "BUY", #OR "SELL"
-                        timestamp = timestamp
-                    )
-                    return setup_event
-                
-                else:
-                
-                    return None
-    
-        lst_tf_strat_signal.append(GivenTF_Strat_Signal())
-
-        GivenTF_Engine = Engine(
-            indicators = {
-                'sma_slow' : SMA(length_sma=20,role="slow"),
-                'sma_fast' : SMA(length_sma=10,role="fast")
-            },
-            structure = Structure(30),
-            strat_signal = lst_tf_strat_signal[i]
-        )
-
-        lst_tf_engines.append(GivenTF_Engine)
-
-    elif n_tf == 2:
-    
-        class GivenTF_Strat_Signal: #GivenTF might be M1,M5,M15,H1,H4 whatever is the TF in timeframes_used  
-
-            def signal_generation(self,context:StrategyContext):
-            
-                #Outputs From Each Indicator on Engine Class 
-                all_roles = list(context.indicator_values.keys())
-                rsi = context.indicator_values[all_roles[0]]
-
-                #Current Timestamp of the signal
-                timestamp = context.timestamp
-
-                #If useful, use Current Structure Direction of that Timeframe
-                direction = context.structure_snapshot['active_range'].direction #DROP IF YOU DON'T WANT TO USE IT IN A SPECIFIC TF
-                
-                cond_1 = rsi != None 
-                combined_comb = cond_1 and rsi < 25
-
-                if combined_comb:
-                
-                    setup_event = SetupEvent(
-                        timeframe = current_tf,
-                        direction = "BUY", #OR "SELL"
-                        timestamp = timestamp
-                    )
-                    return setup_event
-                
-                else:
-                
-                    return None
-                    
-        lst_tf_strat_signal.append(GivenTF_Strat_Signal())
-
-        GivenTF_Engine = Engine(
-            indicators = {
-                'rsi' : RSI(period_size_gains_losses=14,role="rsi")
-            },
-            structure = Structure(48),
-            strat_signal = lst_tf_strat_signal[i]
-        )
-
-        lst_tf_engines.append(GivenTF_Engine)
-
-    elif n_tf == 3:
-    
-        class GivenTF_Strat_Signal: #GivenTF might be M1,M5,M15,H1,H4 whatever is the TF in timeframes_used  
-
-            def signal_generation(self,context:StrategyContext):
-            
-                #Outputs From Each Indicator on Engine Class 
-                all_roles = list(context.indicator_values.keys())
-                rsi = context.indicator_values[all_roles[0]]
-                sma_slow = context.indicator_values[all_roles[1]]
-                sma_fast = context.indicator_values[all_roles[2]]
-
-                #Current Timestamp of the signal
-                timestamp = context.timestamp
-
-                #If useful, use Current Structure Direction of that Timeframe
-                direction = context.structure_snapshot['active_range'].direction #DROP IF YOU DON'T WANT TO USE IT IN A SPECIFIC TF
-                cond_direction = direction == "Low-High"
-
-                cond_1 = rsi != None and rsi < 30
-                cond_2 = sma_slow != None
-                cond_3 = sma_fast != None
-                combined_comb = cond_direction and cond_1 and cond_2 and cond_3 and sma_fast > sma_slow
-
-                if combined_comb:
-                
-                    setup_event = SetupEvent(
-                        timeframe = current_tf,
-                        direction = "BUY", #OR "SELL"
-                        timestamp = timestamp
-                    )
-                    return setup_event
-                
-                else:
-                
-                    return None
-
-        lst_tf_strat_signal.append(GivenTF_Strat_Signal())
-
-        GivenTF_Engine = Engine(
-            indicators = {
-                'rsi' : RSI(period_size_gains_losses=14,role="rsi"),
-                'sma_slow' : SMA(length_sma=96,role="slow"),
-                'sma_fast' : SMA(length_sma=32,role="fast") 
-            },
-            structure = Structure(30),
-            strat_signal = lst_tf_strat_signal[i]
-        )
-
-        lst_tf_engines.append(GivenTF_Engine)
-    
-    """
-    n_tf = i + 1
-
-    current_tf = list(timeframes_used.keys())[i]
-
-    if n_tf == 1:
-    
-        class GivenTF_Strat_Signal: #GivenTF might be M1,M5,M15,H1,H4 whatever is the TF in timeframes_used  
-        
-            def signal_generation(self,context:StrategyContext):
-            
-                #Outputs From Each Indicator on Engine Class 
-                all_roles = list(context.indicators_values.keys())
-                ind_1 = context.indicator_values[all_roles[0]]
-                ind_2 = context.indicator_values[all_roles[1]] #...
-                ind_n = context.indicator_values[all_roles[n-1]]
-
-                #Current Timestamp of the signal
-                timestamp = context.timestamp
-
-                #If useful, use Current Structure Direction of that Timeframe
-                direction = context.structure_snapshot['active_range'].direction #DROP IF YOU DON'T WANT TO USE IT IN A SPECIFIC TF
-                cond_direction = #WRITE A CONDITION BASED ON 'direction' OTHERWISE DROP IT
-
-                if cond_direction:
-                
-                    cond_1 = ind_1 != None and #WRITE SPECIFIC CONDITION
-                    cond_2 = ind_2 != None and #WRITE SPECIFIC CONDITION
-                    #... more conds if needed
-                    cond_n = ind_n != None and #WRITE SPECIFIC CONDITION
-                    combined_comb = cond_1 and cond_2 and ... and cond_n
-
-                    if combined_comb:
-                    
-                        setup_event = SetupEvent(
-                            timeframe = current_tf,
-                            direction = "BUY", #OR "SELL"
-                            timestamp = timestamp
-                        )
-                        return setup_event
-                    
-                    else:
-                    
-                        return None
-                
-                else:
-                    
-                    return None
-        
-        lst_tf_strat_signal.append(GivenTF_Strat_Signal())
-
-        GivenTF_Engine = Engine(
-            indicators = {
-                'ind_1' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n-1 = val_n-1,role = val_role),
-                'ind_2' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n-1 = val_n-1,role = val_role),
-                ...,
-                'ind_n' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n = val_n,role = val_role)
-                #role property is always needed to ensure as that str from the property will be used for signal generation.
-            },
-            structure = Structure(30),
-            strat_signal = lst_tf_strat_signal[i]
-        )
-
-        lst_tf_engines.append(GivenTF_Engine)
-
-    elif n_tf == 2:
-    
-        class GivenTF_Strat_Signal: #GivenTF might be M1,M5,M15,H1,H4 whatever is the TF in timeframes_used  
-        
-            def signal_generation(self,context:StrategyContext):
-            
-                #Outputs From Each Indicator on Engine Class 
-                all_roles = list(context.indicators_values.keys())
-                ind_1 = context.indicator_values[all_roles[0]]
-                ind_2 = context.indicator_values[all_roles[1]] #...
-                ind_n = context.indicator_values[all_roles[n-1]]
-
-                #Current Timestamp of the signal
-                timestamp = context.timestamp
-
-                #If useful, use Current Structure Direction of that Timeframe
-                direction = context.structure_snapshot['active_range'].direction #DROP IF YOU DON'T WANT TO USE IT IN A SPECIFIC TF
-                cond_direction = #WRITE A CONDITION BASED ON 'direction' OTHERWISE DROP IT
-
-                if cond_direction:
-                
-                    cond_1 = ind_1 != None and #WRITE SPECIFIC CONDITION
-                    cond_2 = ind_2 != None and #WRITE SPECIFIC CONDITION
-                    #... more conds if needed
-                    cond_n = ind_n != None and #WRITE SPECIFIC CONDITION
-                    combined_comb = cond_1 and cond_2 and ... and cond_n
-
-                    if combined_comb:
-                    
-                        setup_event = SetupEvent(
-                            timeframe = current_tf,
-                            direction = "BUY", #OR "SELL"
-                            timestamp = timestamp
-                        )
-                        return setup_event
-                    
-                    else:
-                    
-                        return None
-                
-                else:
-                    
-                    return None
-
-        lst_tf_strat_signal.append(GivenTF_Strat_Signal())
-
-        GivenTF_Engine = Engine(
-            indicators = {
-                'ind_1' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n-1 = val_n-1,role = val_role),
-                'ind_2' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n-1 = val_n-1,role = val_role),
-                ...,
-                'ind_n' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n = val_n,role = val_role)
-                #role property is always needed to ensure as that str from the property will be used for signal generation.
-            },
-            structure = Structure(30),
-            strat_signal = lst_tf_strat_signal[i]
-        )
-
-        lst_tf_engines.append(GivenTF_Engine)
-
-    elif n_tf == 3:
-    
-        class GivenTF_Strat_Signal: #GivenTF might be M1,M5,M15,H1,H4 whatever is the TF in timeframes_used  
-        
-            def signal_generation(self,context:StrategyContext):
-            
-                #Outputs From Each Indicator on Engine Class 
-                all_roles = list(context.indicators_values.keys())
-                ind_1 = context.indicator_values[all_roles[0]]
-                ind_2 = context.indicator_values[all_roles[1]] #...
-                ind_n = context.indicator_values[all_roles[n-1]]
-
-                #Current Timestamp of the signal
-                timestamp = context.timestamp
-
-                #If useful, use Current Structure Direction of that Timeframe
-                direction = context.structure_snapshot['active_range'].direction #DROP IF YOU DON'T WANT TO USE IT IN A SPECIFIC TF
-                cond_direction = #WRITE A CONDITION BASED ON 'direction' OTHERWISE DROP IT
-
-                if cond_direction:
-                
-                    cond_1 = ind_1 != None and #WRITE SPECIFIC CONDITION
-                    cond_2 = ind_2 != None and #WRITE SPECIFIC CONDITION
-                    #... more conds if needed
-                    cond_n = ind_n != None and #WRITE SPECIFIC CONDITION
-                    combined_comb = cond_1 and cond_2 and ... and cond_n
-
-                    if combined_comb:
-                    
-                        setup_event = SetupEvent(
-                            timeframe = current_tf,
-                            direction = "BUY", #OR "SELL"
-                            timestamp = timestamp
-                        )
-                        return setup_event
-                    
-                    else:
-                    
-                        return None
-                
-                else:
-                    
-                    return None
-
-        lst_tf_strat_signal.append(GivenTF_Strat_Signal())
-
-        GivenTF_Engine = Engine(
-            indicators = {
-                'ind_1' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n-1 = val_n-1,role = val_role),
-                'ind_2' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n-1 = val_n-1,role = val_role),
-                ...,
-                'ind_n' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n = val_n,role = val_role)
-                #role property is always needed to ensure as that str from the property will be used for signal generation.
-            },
-            structure = Structure(30),
-            strat_signal = lst_tf_strat_signal[i]
-        )
-
-        lst_tf_engines.append(GivenTF_Engine)
-    
-    elif n_tf == 4:
-    
-        class GivenTF_Strat_Signal: #GivenTF might be M1,M5,M15,H1,H4 whatever is the TF in timeframes_used  
-        
-            def signal_generation(self,context:StrategyContext):
-            
-                #Outputs From Each Indicator on Engine Class 
-                all_roles = list(context.indicators_values.keys())
-                ind_1 = context.indicator_values[all_roles[0]]
-                ind_2 = context.indicator_values[all_roles[1]] #...
-                ind_n = context.indicator_values[all_roles[n-1]]
-
-                #Current Timestamp of the signal
-                timestamp = context.timestamp
-
-                #If useful, use Current Structure Direction of that Timeframe
-                direction = context.structure_snapshot['active_range'].direction #DROP IF YOU DON'T WANT TO USE IT IN A SPECIFIC TF
-                cond_direction = #WRITE A CONDITION BASED ON 'direction' OTHERWISE DROP IT
-
-                if cond_direction:
-                
-                    cond_1 = ind_1 != None and #WRITE SPECIFIC CONDITION
-                    cond_2 = ind_2 != None and #WRITE SPECIFIC CONDITION
-                    #... more conds if needed
-                    cond_n = ind_n != None and #WRITE SPECIFIC CONDITION
-                    combined_comb = cond_1 and cond_2 and ... and cond_n
-
-                    if combined_comb:
-                    
-                        setup_event = SetupEvent(
-                            timeframe = current_tf,
-                            direction = "BUY", #OR "SELL"
-                            timestamp = timestamp
-                        )
-                        return setup_event
-                    
-                    else:
-                    
-                        return None
-                
-                else:
-                    
-                    return None
-
-        lst_tf_strat_signal.append(GivenTF_Strat_Signal())
-
-        GivenTF_Engine = Engine(
-            indicators = {
-                'ind_1' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n-1 = val_n-1,role = val_role),
-                'ind_2' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n-1 = val_n-1,role = val_role),
-                ...,
-                'ind_n' : Name_Class_Indicator(att_1 = val_1,att_2 = val_2,...,att_n = val_n,role = val_role)
-                #role property is always needed to ensure as that str from the property will be used for signal generation.
-            },
-            structure = Structure(30),
-            strat_signal = lst_tf_strat_signal[i]
-        )
-
-        lst_tf_engines.append(GivenTF_Engine)
-
-    """
-
-    #IF YOU DON'T USE 4 TFS, MANUALLY REMOVE LATER TFs TILL 'n_tf' == 'timeframes'
-
-dic_engines = helpers_funcs.dict_all_engines(lst_tf_engines,timeframes_used)
-buffers = helpers_funcs.dict_buffers(timeframes_used)
-timeframes = helpers_funcs.dict_timeframes(timeframes_used)
-latest_htf_candle = helpers_funcs.dict_next_opens(timeframes_used)
-next_opens = helpers_funcs.dict_next_opens(timeframes_used)
-latest_setups = helpers_funcs.latest_setup(timeframes_used)
-strucs_when_trade = helpers_funcs.struct_when_trade(timeframes_used)
-
-multi_tf_engine = MultiTimeframeEngine(
-    engines = dic_engines,
-    buffers = buffers,
-    timeframes = timeframes,
-    last_htf_candle= latest_htf_candle,
-    next_expected_open = next_opens,
-    latest_setups = latest_setups,
-    structures_when_trade_is_entered = strucs_when_trade,
-)
-
-#%%
-
-m1_engine = Engine(
-    indicators = {
-        'sma_slow' : SMA(length_sma=20,role="slow"),
-        'sma_fast' : SMA(length_sma=10,role="fast")
-    },
-    structure = Structure(30),
-    strat_signal = M1_Strat_Signal()
-)
-
-m5_engine = Engine(
-    indicators = {
-        'rsi' : RSI(period_size_gains_losses=14,role="rsi")
-    },
-    structure = Structure(48),
-    strat_signal = M5_Strat_Signal()
-)
-
-m15_engine = Engine(
-    indicators = {
-        'rsi' : RSI(period_size_gains_losses=14,role="rsi"),
-        'sma_slow' : SMA(length_sma=96,role="slow"),
-        'sma_fast' : SMA(length_sma=32,role="fast")
-    },
-    structure = Structure(48),
-    strat_signal = M15_Strat_Signal()
-)
-
-multi_tf_engine = MultiTimeframeEngine(
-    engines = {
-        'm1' : m1_engine,
-        'm5' : m5_engine,
-        'm15' : m15_engine
-    },
-    buffers = {
-        'm5' : [],
-        'm15' : []
-    },
-    timeframes = {
-        'm5' : 
-            {
-                'ratio' : 5
-        },
-        'm15' : 
-            {
-                'ratio' : 15
-        }
-    },
-    last_htf_candle= {
-        'm5' : None,
-        'm15' : None
-    },
-    next_expected_open = {
-        'm5' : None,
-        'm15' : None
-    },
-    latest_setups = {
-        'm1' : None,
-        'm5' : None,
-        'm15' : None
-    },
-    structures_when_trade_is_entered = {
-        'm1' : [],
-        'm5' : [],
-        'm15' : []
-    },
-)
-
-#%%
-
-exec_machine = ExecutionEngine(
-    multi_tf_engine = multi_tf_engine,
-    broker = broker
-)
-
-backtest = BacktestRunner()
-
-#%%
-
-backtest = BacktestRunner.run_backtest(backtest,execution_machine = exec_machine,lst_hist_candles = candles)
-
-#%%
-
-print(len(portfolio.closed_trades),len(portfolio.active_positions),portfolio.disposable_balance,portfolio.equity_curve,portfolio.unrealized_balance)
-
-print(len(portfolio.lst_disposable_balance),len(portfolio.lst_unrealized_balance),len(portfolio.lst_equity_curve))
-
-#%%
-
-portfolio.lst_disposable_balance[35]
-
-#%%
-
-len(multi_tf_engine.engines['m1'].structure.lst_local_highs_ts)
-
-#%%
-
-print(portfolio.closed_trades[0])
-print(portfolio.lst_disposable_balance[0])
-
-#%%
-
-tps = [trade for trade in portfolio.closed_trades if trade["result"] == "TP"]
-len(tps)
-
-
-#%%
-
-tps[0]
-
-#%%
-
-portfolio.closed_trades[1]
-
-#%%
-
-df_m15[990:1010]
-
-
-#%%
-
-#multi_tf_engine.structures_when_trade_is_entered["m1"][0]['active_range']
-
-
-
-#%%
-
-"""PROBLEMS ON CANDLES
-
-1 - RANGES AREN'T RIGHT YET, SOMETIMES A START OF A LOW-HIGH IS AT A POINT WHERE THERE ARE LOWER LOWS OF CANDLES.
-2 - FVGS DO NOT DISAPPEAR FROM THE GET GO
-    2.1 - THIS HAPPENS BECAUSE MAYBE CANDLES HTF ARE MARKED WITHOUT ANY CONTEXT OFF FUTURE CANDLES
-    2.2 - SO AFTER THE RANGE IS CALCULATED ONE NEEDS TO SEE IF THE NEXT CANDLES AFTER THE LAST LOW TOUCH ON THE FVG
-
-active_range and fvg_gaps off all candles are being populated with the
-
-3 - On M1, FVGs seem to only be printing the 1st noted FVG
-
-THE DATES ARE INCLUDING WEEKENDS WHICH CAN'T HAPPEN
-
-REGARDING CONSECUTIVE CANDLES IF THEY SHARE THE SAME HIGHS OR THE SAME LOWS, THEY ALL MARK LOCAL HIGHS OR LOWS
-
-PROBABLY IN LOW TO HIGH RANGE, IF A LOT OF LOCAL LOWS ARE FORMED WITHOUT NEW HIGH, IF BELOW 50% START WONDER A CHANGE IN THE RANGE TO HIGH TO LOW
-PROBABLY IN HIGH TO LOW RANGE, IF A LOT OF LOCAL HIGHS ARE FORMED WITHOUT NEW LOW, IF ABOVE 50% START WONDER A CHANGE IN THE RANGE TO LOW TO HIGH
-
-EXAMPLE OF THAT:
-
-ohlc_df_to_visual_candles(df_m1,multi_tf_engine.every_structure['m1'][7284])
-print(multi_tf_engine.every_candles_in_range_list['m1'][7284][0])
-print(multi_tf_engine.every_candles_in_range_list['m1'][7284][-1])
-
-REGARDING CONTINUATION WHEN A NEW LOW IS FORMED INSTEAD ONLY LOCAL HIGHS TO CONTINUE STRUCTURE DO:
-
-    TAKE THE RANGE FROM THE PAST EXTREME OF THE LAST RANGE TILL THE NEW EXTREME AND PICK THE HIGHEST POINT;
-
-REGARDING CONTINUATION WHEN A NEW HIGH IS FORMED INSTEAD ONLY LOCAL LOWS TO CONTINUE STRUCTURE DO:
-
-    TAKE THE RANGE FROM THE PAST EXTREME OF THE LAST RANGE TILL THE NEW EXTREME AND PICK THE LOWEST POINT;
-
-"""
-
-#%%
-
-graph_helper = GraphicHelpers()
-
-struct_m5 = graph_helper.lst_timeframes_to_dataframe(multi_tf_engine.every_structure['m5'])
-
-struct_m15 = graph_helper.lst_timeframes_to_dataframe(multi_tf_engine.every_structure['m15'])
-
-df_balances = graph_helper.lst_balances_to_candle(broker.portfolio.lst_disposable_balance,broker.portfolio.lst_unrealized_balance,broker.portfolio.lst_equity_curve)
-
-#%%
-
-graph_helper = GraphicHelpers()
-
-returns_hist = graph_helper.histogram_of_returns(broker.portfolio.lst_disposable_balance,broker.portfolio.lst_unrealized_balance,broker.portfolio.lst_equity_curve)
-
-returns_hist
-
-#%%
-
-df_closed_trades = graph_helper.closed_trades_in_df(broker.portfolio.closed_trades)
-
-df_closed_trades
-
-#%%
-
-df_closed_trades["RR"].describe()
-
-
-#%%
-
-closed_trades = broker.portfolio.closed_trades.copy()
-
-idx_tps = [i for i in range(len(closed_trades)) if closed_trades[i]["result"] == "TP"]
-
-idx_tps
-
-#%%
-
-broker.portfolio.closed_trades[33]
-
-#%%
-
-df_m1[27800:27850]
-
-
-#%%
-
-cond = (
-    
-)
-
-#%%
-
-struct_m15
-
-#%%
-
-df_m15
-
-#%%
-
-print(len(multi_tf_engine.structures_when_trade_is_entered["m1"]),len(multi_tf_engine.structures_when_trade_is_entered["m5"]),len(multi_tf_engine.structures_when_trade_is_entered["m15"]))
-
-
-#%%
-
-print(len(multi_tf_engine.every_structure['m1']),len(multi_tf_engine.every_structure['m5']),len(multi_tf_engine.every_structure['m15']))
-print(len(df_m1),len(df_m5),len(df_m15))
-
-#%%
-
-multi_tf_engine.every_structure['m1'][0]
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m1,multi_tf_engine.every_structure['m1'][675])
-print(multi_tf_engine.every_candles_in_range_list['m1'][675][0])
-print(multi_tf_engine.every_candles_in_range_list['m1'][675][-1])
-
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m5,multi_tf_engine.every_structure['m5'][170])
-print(multi_tf_engine.every_candles_in_range_list['m5'][170][0])
-print(multi_tf_engine.every_candles_in_range_list['m5'][170][-1])
-
-
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m1,multi_tf_engine.every_structure['m1'][7284])
-print(multi_tf_engine.every_candles_in_range_list['m1'][7284][0])
-print(multi_tf_engine.every_candles_in_range_list['m1'][7284][-1])
-
-
-#%%
-
-print(len(multi_tf_engine.every_structure['m5']),len(df_m5))
-print(df_m5["Date"].dtypes)
-print(df_m1["Date"].dt.day_name().value_counts())
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m1,multi_tf_engine.every_structure['m1'][14800])
-print(multi_tf_engine.every_candles_in_range_list['m1'][14800][0])
-print(multi_tf_engine.every_candles_in_range_list['m1'][14800][-1])
-
-
-#%%
-
-dic_reps = {}
-
-for dic in multi_tf_engine.every_structure['m15']:
-
-    if dic["current_candle"]["current_candle_ts"] in dic_reps.keys():
-
-        dic_reps[dic["current_candle"]["current_candle_ts"]] += 1
-    
-    else:
-
-        dic_reps[dic["current_candle"]["current_candle_ts"]] = 1
-
-#%%
-
-len(dic_reps)
-one_count = [1 if dic_reps[key] == 1 else 0 for key in dic_reps]
-print(f"Sum of one_count: {sum(one_count)} and len of one_count is: {len(one_count)}")
-
-#%%
-
-dic_repetition = {}
-
-for key in dic_reps:
-
-    if dic_reps[key] != 1:
-
-        dic_repetition[key] = dic_reps[key]
-
-#%%
-
-dic_repetition
-
-
-
-#%%
-
-#%%
-
-multi_tf_engine.every_structure['m5'][23000]
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m5,multi_tf_engine.every_structure['m5'][193])
-
-#%%
-
-multi_tf_engine.every_structure['m1'][7300]
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m1,multi_tf_engine.every_structure['m1'][32405])
-print(multi_tf_engine.every_candles_in_range_list['m1'][32405][0])
-print(multi_tf_engine.every_candles_in_range_list['m1'][32405][-1])
-
-"""
-
-PROBLEM FAIR VALUE GAPS ARE NOT BEING CREATED, ONE NEEDS TO UNDERSTAND WHY 
-
-"""
-
-
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m1,multi_tf_engine.every_structure['m1'][32500])
-print(multi_tf_engine.every_candles_in_range_list['m1'][32500][0])
-print(multi_tf_engine.every_candles_in_range_list['m1'][32500][-1])
-
-"""AT 7284 NEW RANGE IS CREATED AND A FVG IS CREATED THAT ALREADY HAS BEEN FILLED SO AVOID THAT """
-
-
-#%%
-
-multi_tf_engine.every_structure['m1'][25]
-
-#%%
-
-multi_tf_engine.structures_when_trade_is_entered["m5"][25]
-
-#%%
-
-#%%
-
-print(df_m1.columns)
-print(df_m5.columns)
-
-#%%
-
-multi_tf_engine.structures_when_trade_is_entered["m1"][15]
-
-#%%
-
-multi_tf_engine.structures_when_trade_is_entered["m5"][15]
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m1,multi_tf_engine.structures_when_trade_is_entered["m1"][15])
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m1,multi_tf_engine.structures_when_trade_is_entered["m5"][25])
-
-#%%
-
-cond = (
-    (pd.to_datetime(df_m5['Date']) >= pd.Timestamp('2012-04-05')) &
-    (pd.to_datetime(df_m5['Date']) <= pd.Timestamp('2012-04-09'))
-)
-
-df_test_m5 = df_m5[cond]
-
-#%%
-
-df_m5[1425:1465]
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m5,multi_tf_engine.every_structure['m5'][999])
-print(multi_tf_engine.every_candles_in_range_list['m5'][999][0])
-print(multi_tf_engine.every_candles_in_range_list['m5'][999][-1])
-
-
-"""STILL THE SAME PROBLEM REGARDING THE PICKING OF HIGHS AND LOWS"""
-
-
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m5,multi_tf_engine.every_structure['m5'][1000])
-print(multi_tf_engine.every_candles_in_range_list['m5'][1000][0])
-print(multi_tf_engine.every_candles_in_range_list['m5'][1000][-1])
-
-"""
-
-RANGE HAS VALUES THAT ARE HIGHER THAN THE RANGE ITSELF, LOCAL HIGHS WHICH HAVE VALUES THAT ARE ABOVE IT
-
-ohlc_df_to_visual_candles(df_m5,multi_tf_engine.every_structure['m5'][1000])
-print(multi_tf_engine.every_candles_in_range_list['m5'][1000][0])
-print(multi_tf_engine.every_candles_in_range_list['m5'][1000][-1])
-
-WHAT IS HAPPENING?
-
-SINCE IT WAS HIGH TO LOW AND BECAME LOW TO HIGH IT IS ASSUMES:
-
-   LAST LOCAL HIGH AFTER THE PREV RANGE END AS THE NEW RANGE START
-
-   PROBLEM : LAST LOCAL HIGH IS NOT ENSURED TO BE THE HIGHEST POINT OF THAT RANGE
-
-   SOLUTION : WHENEVER THE RANGE CHANGES, FROM THE PAST LAST EXTREME TO THE NEW LAST EXTREME
-
-        - CALCULATE THE CANDLE THAT HAS THE HIGHEST HIGH IF DIRECTION TURNS INTO HIGH-LOW, FOR PREV_RANGE AS LOW-HIGH
-        - OTHERWISE THE CANDLE THAT HAS THE LOWEST LOW IF DIRECTION TURNS INTO LOW-HIGH, FOR PREV_RANGE AS HIGH-LOW
-
-
-"""
-
-#%%
-
-datetime(2012,4,15).weekday()
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m5,multi_tf_engine.structures_when_trade_is_entered["m5"][15])
-
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m15,multi_tf_engine.structures_when_trade_is_entered["m15"][15])
-
-
-#%%
-
-multi_tf_engine.structures_when_trade_is_entered["m5"][50]['fv_gaps']
-
-#%%
-
-
-
-
-#%%
-
-df_m1[0:50]
-
-#%%
-
-multi_tf_engine.structures_when_trade_is_entered["m1"][7]["current_candle"]["current_candle_ts"]
-
-#%%
-
-#IT IS NOT PRINTING EXACTLY AT THE NEEDED CANDLE, ONE NEEDS TO FIND A WAY OFF HAVING THINGS PRINTED AT THE PRESENT CANDLE
-
-#%%
-
-multi_tf_engine.structures_when_trade_is_entered["m1"][7]["local_highs_ts"]
-
-
-#%%
-
-df_test = df_m1[8837:9155].reset_index(drop=True)
-df_test["Local_High"] = False
-df_test['Local_Low'] = False
-
-n_candles_below_above = 5
-
-#%%
-
-for i in range(n_candles_below_above,len(df_test)-n_candles_below_above):
-
-    is_local_high = False
-    is_local_low = False
-    n_count_high = 0
-    n_count_low = 0
-    high_to_observe = df_test.at[i,"High"]
-    low_to_observe = df_test.at[i,"Low"]
-    for z in range(n_candles_below_above):
-
-        candle_below_high = df_test.at[i+(z-n_candles_below_above),"High"]
-        candle_above_high = df_test.at[i+z+1,"High"]
-        candle_below_low = df_test.at[i+(z-n_candles_below_above),"Low"]
-        candle_above_low = df_test.at[i+z+1,"Low"]
-        cond_high = high_to_observe > candle_below_high and high_to_observe > candle_above_high
-        cond_low = low_to_observe < candle_below_low and low_to_observe < candle_above_low
-        n_count_high += 1 if cond_high else 0
-        n_count_low += 1 if cond_low else 0
-    
-    df_test.at[i,"Local_High"] = True if n_count_high == n_candles_below_above else False
-    df_test.at[i,"Local_Low"] = True if n_count_low == n_candles_below_above else False
-
-#%%
-
-def ohlc_df_to_visual_candle(df_to_print: pd.DataFrame):
-
-    # Example data (replace with your OHLC data)
-    data = df_to_print.loc[:,['Date', 'Open', 'High', 'Low', 'Close']]
-
-    # Create the candlestick chart
-    fig = go.Figure(data=[
-        go.Candlestick(
-            x=df_to_print['Date'],
-            open=df_to_print['Open'],
-            high=df_to_print['High'],
-            low=df_to_print['Low'],
-            close=df_to_print['Close'],
-            increasing_line_color='blue',    # border color up candles
-            decreasing_line_color='black',      # border color down candles
-            increasing_fillcolor='blue',    # fill color up candles
-            decreasing_fillcolor='black',           # fill color down candles
-        )
-    ])
-
-    fig.update_layout(
-        title='Interactive Candlestick Chart',
-        xaxis_title='Date',
-        yaxis_title='Price',
-        xaxis_rangeslider_visible=True,  # allows zooming and sliding
-        template='plotly_white',
-        width=1500,
-        height=900,
-        margin=dict(l=80, r=40, t=80, b=60),
-
-    )
-
-    # Remove gridlines
-    fig.update_xaxes(
-        showgrid=False,
-        rangebreaks = [dict(bounds=["sat", "sun"])] # remove weekends to avoid gaps
-    )
-    fig.update_yaxes(
-        showgrid=False           
-    )
-
-    """
-    df_to_print.loc[df_to_print['Range_Status']['Discount'] == True]
-    """
-    #Adding Annotations
-    list_local_highs = df_to_print.loc[df_to_print['Local_High'] == True].index.to_list()
-    list_local_lows = df_to_print.loc[df_to_print['Local_Low'] == True].index.to_list()
-    # list_premium_areas = df_to_print.loc[df_to_print['Premium_Area'] == True].index.to_list()
-    # list_discount_areas = df_to_print.loc[df_to_print['Discount_Area'] == True].index.to_list()
-    # last_index_df_to_print = df_to_print.index[-1]
-    # ind_day_first_extreme = df_to_print.at[last_index_df_to_print,'Active_Range_Stats'][2] 
-    # ind_day_last_extreme = df_to_print.at[last_index_df_to_print,'Active_Range_Stats'][3] 
-    #Annotations_Default
-    base_style_local_low = dict(
-        showarrow=True, 
-        arrowhead=2, 
-        ax=0, 
-        ay=30, 
-        font=dict(color='white',size=12), 
-        bgcolor='rgba(0,0,0,0.5)'
-    )
-    base_style_local_high = dict(
-        showarrow=True, 
-        arrowhead=2, 
-        ax=0, 
-        ay=-30, 
-        font=dict(color='white',size=12), 
-        bgcolor='rgba(0,0,0,0.5)'
-    )
-      
-    for index in list_local_highs:
-
-        fig.add_annotation(
-            x=df_to_print.loc[index,'Date'], y=df_to_print.loc[index,'High'],
-            text='Local_High',
-            **base_style_local_high
-        )
-    for index in list_local_lows:
-
-        fig.add_annotation(
-            x=df_to_print.loc[index,'Date'], y=df_to_print.loc[index,'Low'],
-            text='Local_Low',
-            **base_style_local_low
-        )
-    #For Premium Areas and Discounted Areas
-    
-    # base_style_discount_areas = dict(
-    #     showarrow=True, 
-    #     arrowhead=2, 
-    #     ax=0, 
-    #     ay=50, 
-    #     font=dict(color='red',size=12), 
-    #     bgcolor='rgba(0,0,0,5)'
-    # )
-    # base_style_premium_areas = dict(
-    #     showarrow=True, 
-    #     arrowhead=2, 
-    #     ax=0, 
-    #     ay=-50, 
-    #     font=dict(color='red',size=12), 
-    #     bgcolor='rgba(0,0,0,5)'
-    # )
-    # for index in list_premium_areas:
-
-    #     fig.add_annotation(
-    #         x=df_to_print.loc[index,'Date'], y=df_to_print.loc[index,'High'],
-    #         text='Prem_Area',
-    #         **base_style_premium_areas
-    #     )
-    # for index in list_discount_areas:
-        
-    #     fig.add_annotation(
-    #         x=df_to_print.loc[index,'Date'], y=df_to_print.loc[index,'Low'],
-    #         text='Disc_Area',
-    #         **base_style_discount_areas
-    #     )
-    
-    # #For The values of a given Range
-
-    # #Settings
-
-    # base_style_range_extremes_highs = dict(
-    #     showarrow=True, 
-    #     arrowhead=2, 
-    #     ax=0, 
-    #     ay=-100, 
-    #     font=dict(color='white',size=12), 
-    #     bgcolor='rgba(0,0,0,5)'
-    # )
-
-    # base_style_range_extremes_lows = dict(
-    #     showarrow=True, 
-    #     arrowhead=2, 
-    #     ax=0, 
-    #     ay=100, 
-    #     font=dict(color='white',size=12), 
-    #     bgcolor='rgba(0,0,0,5)'
-    # )
-    
-    # if active_range_direction == 'Low-High':
-
-    #     #Add first_extreme_range
-    #     fig.add_annotation(
-    #         x=df_to_print.at[idx_first_extreme,'Date'], y = df_to_print.at[idx_first_extreme,'Low'],
-    #         text = 'Range_Start',
-    #         **base_style_range_extremes_lows
-            
-    #     )
-
-    #     #Add last_extreme_range
-    #     fig.add_annotation(
-    #         x=df_to_print.at[idx_last_extreme,'Date'], y = df_to_print.at[idx_last_extreme,'High'],
-    #         text = 'Range_End',
-    #         **base_style_range_extremes_highs
-
-    #     )
-    
-    # else: #'High-Low'
-
-    #     #Add first_extreme_range
-    #     fig.add_annotation(
-    #         x=df_to_print.at[idx_first_extreme,'Date'], y =df_to_print.at[idx_first_extreme,'High'],
-    #         text = 'Range_Start',
-    #         **base_style_range_extremes_highs
-
-    #     )
-
-    #     #Add last_extreme_range
-    #     fig.add_annotation(
-    #         x=df_to_print.at[idx_last_extreme,'Date'], y =df_to_print.at[idx_last_extreme,'Low'],
-    #         text = 'Range_End',
-    #         **base_style_range_extremes_lows
-
-    #     )
-
-    return fig.show()
-
-
-#%%
-
-
-ohlc_df_to_visual_candle(df_test)
-
-
-#%%
-
-df_test[df_test['Local_High'] == True]
-
-#%%
-
-df_test[df_test['Local_Low'] == True]
-
-#%%
-
-graph_helper.ohlc_df_to_visual_candles(df_m1,multi_tf_engine.structures_when_trade_is_entered["m1"][8])
-
-#%%
-
-len(multi_tf_engine.structures_when_trade_is_entered["m1"])
-
-#%%
-
-multi_tf_engine.structures_when_trade_is_entered["m1"][0]['local_highs']
-
-#%%
-
-multi_tf_engine.structures_when_trade_is_entered["m1"][15]
-
-#%%
-
-len(portfolio.closed_trades)
-
-#%%
-
-portfolio.closed_trades[0]
-
-#%%
-
-from datetime import datetime
-
-type((datetime(2013,5,2,15,15) > datetime(2013,5,2,15,5)))
-
-#%%
-
-#FIND WAYS TO CHECK HOW THE STRUCTURE IS BECOMING TO SEE WHERE THE ENTRIES ARE OCURRING
-#CREATE A PROPERTY THAT HAS THE STRUCTURE OF EACH TRADE.
-#CORRECT THE CANDLES
-
-
-#%%
-
-d = deque([4,5,6,7],maxlen=3)
-
-d.clear()
-
-d
-
-
-
-    def append_recurring_df(self):
-
-        self.lst_recurring_dfs.append(self.recurring_df.copy())
-        return self.lst_recurring_dfs
-
-#%%
-
-
-#%%
-
-d = deque([1,2,3,4,5,6],maxlen=3)
-
-d.extend([7,8,9])
-
-d[0]
-
-# %%
-
-datetime
-
-#%%
-
-type(df_m1.at[0,"Date"])
-# %%
-df_m1.at[0,"Date"].to_pydatetime() != datetime(2013,3,8,17,0)
-
-# %%
-
-
-l = [[1,2,3],[4,5,6],[7,8,9]]
-
-idx_zero_max = max(lst[0] for lst in l)
-
-l.index(idx_zero_max)
-
-
-
-# %%
