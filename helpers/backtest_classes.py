@@ -1408,6 +1408,7 @@ class SMA:
         self.role = role
         self.window = deque(maxlen = self.length_sma) #ONLY COLLECTS THE LAST self.length_sma
 
+        self.prev_value = None
         self.value = None
         self.running_sum = 0
         self.ready = False
@@ -1420,6 +1421,7 @@ class SMA:
         if len(self.window) < self.length_sma:
 
             self.running_sum += new_val
+            self.prev_value = self.value
             self.value = None if len(self.window) != self.length_sma - 1 else self.running_sum / self.length_sma
             self.ready = False if len(self.window) != self.length_sma - 1 else True
             self.window.append(close)
@@ -1430,6 +1432,7 @@ class SMA:
             oldest_val = self.window[0]
             self.running_sum -= oldest_val
             self.running_sum += new_val
+            self.prev_value = self.value
             self.value = self.running_sum / self.length_sma
             self.ready = True
             self.window.append(close)
